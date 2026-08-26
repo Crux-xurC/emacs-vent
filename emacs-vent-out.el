@@ -34,6 +34,14 @@ keep passing it on, or nil to drop it. Default is pass-through."
   :type 'function
   :group 'emacs-vent)
 
+(defcustom emacs-vent-in-function nil
+  "Function called with (WS FRAME) for each incoming websocket message, or nil.
+Left nil in Phase 1 (input ignored). `emacs-vent-in' sets this to its own
+handler when loaded, so Phase 1's server plumbing needs no further changes
+to support Phase 5 (design doc vent-in v0.2, in-filters position at receipt)."
+  :type '(choice (const nil) function)
+  :group 'emacs-vent)
+
 (defvar emacs-vent--server nil)
 (defvar emacs-vent--client nil
   "The single accepted client connection, or nil (Phase 1: one only).")
@@ -143,9 +151,9 @@ Drops silently if no client is connected (design doc C-8)."
     (setq emacs-vent--client ws)
     (emacs-vent--send (list :kind "hello"))))
 
-(defun emacs-vent--on-message (_ws _frame)
-  ;; vent-in is not implemented in Phase 1 (design doc C-2); ignore input.
-  nil)
+(defun emacs-vent--on-message (ws frame)
+  (when emacs-vent-in-function
+    (funcall emacs-vent-in-function ws frame)))
 
 (defun emacs-vent--on-close (ws)
   (when (eq ws emacs-vent--client)

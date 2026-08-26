@@ -7,6 +7,7 @@
 
 (require 'websocket)
 (require 'emacs-vent-out)
+(require 'emacs-vent-in)
 
 (emacs-vent-mode 1)
 
