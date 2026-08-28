@@ -1,7 +1,15 @@
 ;;; emacs-vent-out.el --- Emacs -> Tezcatl event/context bridge  -*- lexical-binding: t; -*-
 
-;; Phase 1 (design doc Part C) only: no vent-in, no capability negotiation
-;; content, no batching. Immediate send, single client, 127.0.0.1 only.
+;; Phase 1 (design doc Part C): single client, 127.0.0.1 only, immediate send.
+;; `emacs-vent-in-function' is the Phase 5 (vent-in) plug-in point.
+;;
+;; Context rework (2026-08-28): `context' is no longer a per-command state
+;; snapshot flushed together with events. It is now a lightweight, flush-exempt
+;; notification of *where vent-in input currently goes* (the selected window of
+;; the selected frame, or the active minibuffer), sent only when that target
+;; changes. See `emacs-vent--maybe-send-context'. This supersedes the
+;; "Event/Context flushed as one unit" wording in design doc A-7 / ver0
+;; §10-11,19.
 
 (require 'websocket)
 (require 'json)
@@ -45,6 +53,13 @@ to support Phase 5 (design doc vent-in v0.2, in-filters position at receipt)."
 (defvar emacs-vent--server nil)
 (defvar emacs-vent--client nil
   "The single accepted client connection, or nil (Phase 1: one only).")
+
+(defvar emacs-vent--id-table (make-hash-table :test 'eq :weakness 'key)
+  "Maps live window/frame objects to a stable string id for this session.")
+(defvar emacs-vent--id-counters nil
+  "Alist of (PREFIX . LAST-N) backing `emacs-vent--id'.")
+(defvar emacs-vent--last-target nil
+  "Last (BUFFER-NAME WINDOW-ID FRAME-ID) sent as a context message, or nil.")
 
 (defconst emacs-vent-log-buffer-name "*emacs-vent-log*")
 
@@ -94,13 +109,48 @@ Drops silently if no client is connected (design doc C-8)."
                  :type type)
            (when content (list :content content)))))
 
-(defun emacs-vent--send-context ()
-  (emacs-vent--send
-   (list :kind "context"
-         :buffer-name (buffer-name)
-         :major-mode (symbol-name major-mode)
-         :point (point)
-         :read-only (if buffer-read-only t :false))))
+(defun emacs-vent--id (object prefix)
+  "Return a stable \"PREFIX-N\" string id for OBJECT (a window or frame),
+assigning one on first sight. OBJECT is held weakly, so dead windows and
+frames do not accumulate."
+  (or (gethash object emacs-vent--id-table)
+      (let* ((cell (or (assoc prefix emacs-vent--id-counters)
+                       (car (push (cons prefix 0) emacs-vent--id-counters))))
+             (n (setcdr cell (1+ (cdr cell)))))
+        (puthash object (format "%s-%d" prefix n) emacs-vent--id-table))))
+
+(defun emacs-vent--current-target ()
+  "The current vent-in injection target as (BUFFER-NAME WINDOW-ID FRAME-ID):
+the selected window of the selected frame, or the active minibuffer."
+  (let ((win (selected-window)))
+    (list (buffer-name (window-buffer win))
+          (emacs-vent--id win "win")
+          (emacs-vent--id (selected-frame) "frame"))))
+
+(defun emacs-vent--context-plist (target)
+  (list :kind "context"
+        :buffer-name (nth 0 target)
+        :window (nth 1 target)
+        :frame (nth 2 target)))
+
+(defun emacs-vent--send-context-now ()
+  "Unconditionally send the current target as a context message.
+Used on client connect to establish the initial target (ver0 §10)."
+  (emacs-vent--protected
+   (let ((target (emacs-vent--current-target)))
+     (setq emacs-vent--last-target target)
+     (emacs-vent--send (emacs-vent--context-plist target)))))
+
+(defun emacs-vent--maybe-send-context (&optional _frame)
+  "Send a context message iff the injection target changed since the last send.
+Runs from `window-selection-change-functions' (hence the ignored FRAME arg),
+`window-buffer-change-functions', and `minibuffer-setup-hook'. Context is
+applied by the client on arrival -- it is not part of the flush contract."
+  (emacs-vent--protected
+   (let ((target (emacs-vent--current-target)))
+     (unless (equal target emacs-vent--last-target)
+       (setq emacs-vent--last-target target)
+       (emacs-vent--send (emacs-vent--context-plist target))))))
 
 (defun emacs-vent--send-flush ()
   (emacs-vent--send (list :kind "flush")))
@@ -108,9 +158,9 @@ Drops silently if no client is connected (design doc C-8)."
 ;; --- Event sources (design doc C-4) ---
 
 (defun emacs-vent--post-command ()
-  "The one command-boundary flush point (design doc A-7 / C-7 step 6)."
+  "Command-boundary flush for batched events (design doc A-7 / C-7 step 6).
+Context is sent separately now (`emacs-vent--maybe-send-context'), not here."
   (emacs-vent--protected
-   (emacs-vent--send-context)
    (emacs-vent--send-flush)))
 
 (defun emacs-vent--message-advice (orig-fn fmt &rest args)
@@ -149,7 +199,9 @@ Drops silently if no client is connected (design doc C-8)."
       ;; Phase 1 accepts a single connection only (design doc C-2).
       (websocket-close ws)
     (setq emacs-vent--client ws)
-    (emacs-vent--send (list :kind "hello"))))
+    (emacs-vent--send (list :kind "hello"))
+    ;; Establish the initial injection target right away (ver0 §10).
+    (emacs-vent--send-context-now)))
 
 (defun emacs-vent--on-message (ws frame)
   (when emacs-vent-in-function
@@ -180,6 +232,9 @@ Implements Part C (Phase 1 minimal form) of the emacs-vent-out design doc."
          :on-message #'emacs-vent--on-message
          :on-close #'emacs-vent--on-close))
   (add-hook 'post-command-hook #'emacs-vent--post-command)
+  (add-hook 'window-selection-change-functions #'emacs-vent--maybe-send-context)
+  (add-hook 'window-buffer-change-functions #'emacs-vent--maybe-send-context)
+  (add-hook 'minibuffer-setup-hook #'emacs-vent--maybe-send-context)
   (add-hook 'after-change-functions #'emacs-vent--after-change)
   (add-hook 'compilation-start-hook #'emacs-vent--compilation-start)
   (add-hook 'compilation-filter-hook #'emacs-vent--compilation-filter)
@@ -189,7 +244,11 @@ Implements Part C (Phase 1 minimal form) of the emacs-vent-out design doc."
 
 (defun emacs-vent--stop ()
   (remove-hook 'post-command-hook #'emacs-vent--post-command)
+  (remove-hook 'window-selection-change-functions #'emacs-vent--maybe-send-context)
+  (remove-hook 'window-buffer-change-functions #'emacs-vent--maybe-send-context)
+  (remove-hook 'minibuffer-setup-hook #'emacs-vent--maybe-send-context)
   (remove-hook 'after-change-functions #'emacs-vent--after-change)
+  (setq emacs-vent--last-target nil)
   (remove-hook 'compilation-start-hook #'emacs-vent--compilation-start)
   (remove-hook 'compilation-filter-hook #'emacs-vent--compilation-filter)
   (remove-hook 'compilation-finish-functions #'emacs-vent--compilation-finish)
