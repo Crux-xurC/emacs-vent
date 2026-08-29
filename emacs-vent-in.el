@@ -15,9 +15,8 @@
   "Functions run on an incoming message plist before it is acted on.
 Each is called with the full parsed message (including its :kind) and
 must return a message plist to keep passing it on, or nil to drop it.
-Runs immediately after JSON parsing, before any event conversion or
-kill-ring mutation (design doc §8.1) -- applies to both key input and
-clipboard text (§8.2). Default is pass-through (§8.3)."
+Runs immediately after JSON parsing, before any event conversion
+(design doc §8.1). Default is pass-through (§8.3)."
   :type 'hook
   :group 'emacs-vent)
 
@@ -83,15 +82,6 @@ per-event granularity; whole-message atomicity is the safer reading."
     (error
      (emacs-vent--log "in: bad input sequence %S: %S, dropped" sequence err))))
 
-(defun emacs-vent-in--handle-clipboard (text)
-  "Load TEXT onto the kill-ring (design doc §11.3). Never inserts text --
-the actual paste is a normal C-y key event, handled like any other input."
-  (if (stringp text)
-      (condition-case err
-          (kill-new text)
-        (error (emacs-vent--log "in: kill-new failed: %S, dropped" err)))
-    (emacs-vent--log "in: clipboard text not a string: %S, dropped" text)))
-
 (defun emacs-vent-in--apply-filters (msg)
   "Run MSG through `emacs-vent-in-filters'; nil (from a filter, or from
 an error inside one) means drop (design doc §13 in-filters row)."
@@ -105,13 +95,14 @@ an error inside one) means drop (design doc §13 in-filters row)."
 
 (defun emacs-vent-in--on-message (_ws frame)
   "Entry point wired into `emacs-vent-in-function' (emacs-vent-out.el).
-NOTE: the design doc describes the input/clipboard wire shape only at
-the field level (§8.2's table, §7's sequence structure) without pinning
-exact JSON key names. This implementation assumes:
+The only accepted kind is `input' (overview.md §3.6: vent-in has a
+single input path; the `clipboard' and `eval' kinds were withdrawn
+2026-08-30). The design doc pins key/modifiers only at the field level
+(§7's sequence structure) without exact JSON key names; this
+implementation assumes, mirroring emacs-vent-out's own `:kind'
+convention:
   {\"kind\": \"input\", \"sequence\": [{\"key\": ..., \"modifiers\": [...]}, ...]}
-  {\"kind\": \"clipboard\", \"text\": \"...\"}
-mirroring emacs-vent-out's own `:kind' convention. Flag to the user if
-the Tezcatl side expects something different."
+Flag to the user if the Tezcatl side expects something different."
   (emacs-vent--protected
    (let ((msg (condition-case nil
                   (json-parse-string (websocket-frame-text frame)
@@ -125,7 +116,6 @@ the Tezcatl side expects something different."
        (when msg
          (pcase (plist-get msg :kind)
            ("input" (emacs-vent-in--handle-input (plist-get msg :sequence)))
-           ("clipboard" (emacs-vent-in--handle-clipboard (plist-get msg :text)))
            (kind (emacs-vent--log "in: unknown kind %S, dropped" kind))))))))
 
 (setq emacs-vent-in-function #'emacs-vent-in--on-message)
