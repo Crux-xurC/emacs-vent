@@ -41,6 +41,11 @@ unrecognized -- caught by the caller per design doc §13."
   (let ((key-part
          (cond
           ((member key emacs-vent-in--special-keys) (format "<%s>" key))
+          ;; A literal space is sent as the one-character key " " (design doc
+          ;; §5.4: `space' is not a special-key name). `kbd' splits its spec on
+          ;; whitespace, so " " parses to the empty key sequence and
+          ;; `(aref (kbd " ") 0)' throws -- spell it "SPC" for `kbd'.
+          ((equal key " ") "SPC")
           ((= (length key) 1) key)
           (t (error "unrecognized key: %S" key)))))
     ;; Validate every supplied modifier before using any of them -- the
@@ -75,12 +80,17 @@ of them and inject as one run of events, in order. If any one event in
 the sequence fails to convert, the whole sequence is dropped rather
 than injecting a partial key sequence (e.g. C-x without C-f) -- design
 doc §13 says discard on conversion/injection failure without specifying
-per-event granularity; whole-message atomicity is the safer reading."
-  (condition-case err
-      (let ((events (mapcar #'emacs-vent-in--event sequence)))
-        (setq unread-command-events (append unread-command-events events)))
-    (error
-     (emacs-vent--log "in: bad input sequence %S: %S, dropped" sequence err))))
+per-event granularity; whole-message atomicity is the safer reading.
+SEQUENCE that is not a list (a malformed message: a bare value or object
+where an array was expected) is dropped with a log, per §13's rule that
+malformed input is discarded and recorded, never silently ignored."
+  (if (not (listp sequence))
+      (emacs-vent--log "in: input sequence not an array: %S, dropped" sequence)
+    (condition-case err
+        (let ((events (mapcar #'emacs-vent-in--event sequence)))
+          (setq unread-command-events (append unread-command-events events)))
+      (error
+       (emacs-vent--log "in: bad input sequence %S: %S, dropped" sequence err)))))
 
 (defun emacs-vent-in--apply-filters (msg)
   "Run MSG through `emacs-vent-in-filters'; nil (from a filter, or from
@@ -115,7 +125,10 @@ Flag to the user if the Tezcatl side expects something different."
        (setq msg (emacs-vent-in--apply-filters msg))
        (when msg
          (pcase (plist-get msg :kind)
-           ("input" (emacs-vent-in--handle-input (plist-get msg :sequence)))
+           ("input"
+            (if (plist-member msg :sequence)
+                (emacs-vent-in--handle-input (plist-get msg :sequence))
+              (emacs-vent--log "in: input message missing :sequence, dropped")))
            (kind (emacs-vent--log "in: unknown kind %S, dropped" kind))))))))
 
 (setq emacs-vent-in-function #'emacs-vent-in--on-message)
