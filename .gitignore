@@ -1,1 +1,22 @@
+# nix build symlink
 result
+
+# This repo doubles as Emacs's --init-directory in the dev shell
+# (flake.nix `e()`), so ordinary Emacs runtime files land here.
+/auto-save-list/
+/eln-cache/
+/tutorial/
+/transient/
+/elpa/
+/.emacs.desktop
+/.emacs.desktop.lock
+/network-security.data
+/places
+/projectile.cache
+/recentf
+/savehist
+/tramp
+*.elc
+*~
+\#*\#
+.\#*
