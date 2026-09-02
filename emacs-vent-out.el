@@ -152,6 +152,18 @@ applied by the client on arrival -- it is not part of the flush contract."
        (setq emacs-vent--last-target target)
        (emacs-vent--send (emacs-vent--context-plist target))))))
 
+;;;###autoload
+(defun emacs-vent-send-context ()
+  "Unconditionally (re-)send the current vent-in target as a context message.
+Unlike `emacs-vent--maybe-send-context', this sends even when the target is
+unchanged. A client that attached after the initial `hello'/`context'
+handshake -- e.g. a browser tab reaching emacs-vent through the Phase 7
+relay, which multiplexes many tabs onto this one client slot -- calls this
+\(delivered as an `M-:' input) to obtain the current target. No-op when no
+client is connected."
+  (interactive)
+  (emacs-vent--send-context-now))
+
 (defun emacs-vent--send-flush ()
   (emacs-vent--send (list :kind "flush")))
 
