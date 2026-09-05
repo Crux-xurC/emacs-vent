@@ -55,6 +55,27 @@ than infer which pane changed from `proof-shell-last-output-kind'."
 (add-hook 'proof-shell-handle-delayed-output-hook
           #'emacs-vent--proof-general-delayed-output)
 
+;; `emacs-vent-out.el's `emacs-vent--stop' (run when `emacs-vent-mode' turns
+;; off) has no knowledge of this file's hook -- by design, this file never
+;; touches core's `--start'/`--stop' (see the file header). Without the
+;; following, disabling `emacs-vent-mode' would leave
+;; `emacs-vent--proof-general-delayed-output' firing on every Proof General
+;; step for the rest of the session -- harmless (it only reaches a no-op
+;; when `emacs-vent--send' finds `emacs-vent--client' nil) but wasted work,
+;; and it quietly breaks the expectation that turning the mode off fully
+;; deactivates emacs-vent. `emacs-vent-mode-hook' is the public hook
+;; `define-minor-mode' already provides for exactly this kind of add-on,
+;; run on every toggle with `emacs-vent-mode' already set to the new state.
+(defun emacs-vent--dialogue-sync-hooks ()
+  "Keep the dialogue output hook in sync with `emacs-vent-mode' on/off."
+  (if emacs-vent-mode
+      (add-hook 'proof-shell-handle-delayed-output-hook
+                #'emacs-vent--proof-general-delayed-output)
+    (remove-hook 'proof-shell-handle-delayed-output-hook
+                 #'emacs-vent--proof-general-delayed-output)))
+
+(add-hook 'emacs-vent-mode-hook #'emacs-vent--dialogue-sync-hooks)
+
 ;; Future dialogue tools (a REPL, a debugger, ...) get their own hook
 ;; function + `add-hook' pair here, following the same shape -- this file is
 ;; the shared home for "dialogue" output sources, the way `emacs-vent-out.el'
