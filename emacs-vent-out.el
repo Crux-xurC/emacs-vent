@@ -144,7 +144,15 @@ Used on client connect to establish the initial target (ver0 §10)."
 (defun emacs-vent--maybe-send-context (&optional _frame)
   "Send a context message iff the injection target changed since the last send.
 Runs from `window-selection-change-functions' (hence the ignored FRAME arg),
-`window-buffer-change-functions', and `minibuffer-setup-hook'. Context is
+`window-buffer-change-functions', `minibuffer-setup-hook', and
+`post-command-hook' (a catch-all safety net: some exits -- e.g. aborting a
+minibuffer read with \\[keyboard-quit] -- are not reliably reported by any of
+the other three; `minibuffer-exit-hook' cannot substitute for this because it
+runs before the minibuffer window is deselected, so `emacs-vent--current-target'
+would still read the minibuffer and the diff guard below would suppress the
+send). The diff guard makes the extra `post-command-hook' call cheap: it only
+ever sends when something actually changed, so this does not turn context
+into a per-command message the way `emacs-vent--post-command' is. Context is
 applied by the client on arrival -- it is not part of the flush contract."
   (emacs-vent--protected
    (let ((target (emacs-vent--current-target)))
@@ -244,6 +252,7 @@ Implements Part C (Phase 1 minimal form) of the emacs-vent-out design doc."
          :on-message #'emacs-vent--on-message
          :on-close #'emacs-vent--on-close))
   (add-hook 'post-command-hook #'emacs-vent--post-command)
+  (add-hook 'post-command-hook #'emacs-vent--maybe-send-context)
   (add-hook 'window-selection-change-functions #'emacs-vent--maybe-send-context)
   (add-hook 'window-buffer-change-functions #'emacs-vent--maybe-send-context)
   (add-hook 'minibuffer-setup-hook #'emacs-vent--maybe-send-context)
@@ -256,6 +265,7 @@ Implements Part C (Phase 1 minimal form) of the emacs-vent-out design doc."
 
 (defun emacs-vent--stop ()
   (remove-hook 'post-command-hook #'emacs-vent--post-command)
+  (remove-hook 'post-command-hook #'emacs-vent--maybe-send-context)
   (remove-hook 'window-selection-change-functions #'emacs-vent--maybe-send-context)
   (remove-hook 'window-buffer-change-functions #'emacs-vent--maybe-send-context)
   (remove-hook 'minibuffer-setup-hook #'emacs-vent--maybe-send-context)
