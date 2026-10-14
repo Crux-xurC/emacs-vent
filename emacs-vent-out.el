@@ -85,9 +85,58 @@ Required by design doc C-8: a hook error must never reach Emacs."
 (defun emacs-vent--current-source ()
   (emacs-vent--protected (funcall emacs-vent-source-function this-command)))
 
+(defun emacs-vent--utf8 (s)
+  "Return string S as clean UTF-8 multibyte text, or S unchanged if it is
+already fine (or not a string).
+
+`json-serialize' signals `wrong-type-argument json-value-p' -- which
+`emacs-vent--protected' then swallows, so the whole message silently never
+reaches the client -- on two kinds of string:
+
+  * a unibyte string carrying a byte >= #x80.  The raw UTF-8 that
+    `json-serialize' itself returns is exactly this, and Tezcatl's resolver
+    feeds it straight back via
+    `(message \"tez:%s ok %s\" corr (json-serialize VALUE))'.  So any
+    non-ASCII `M-:' result -- a kanji path in an `ok' payload, the curly
+    quotes in nearly every built-in Emacs error string on the `err' path --
+    would never produce a `message' event, and the resolver would time out
+    with a misleading \"no tez: line\" instead of the real answer.
+
+  * a multibyte string carrying a raw eight-bit byte (#x3FFF80..#x3FFFFF),
+    which is what `format' / `format-message' produce when such a unibyte
+    string is spliced into a *non-ASCII* format string.
+
+Reinterpreting the bytes as UTF-8 fixes both.  A clean string is left
+untouched -- the check is one C-level `string-match-p'."
+  (if (and (stringp s)
+           (if (multibyte-string-p s)
+               (string-match-p "[\x3FFF80-\x3FFFFF]" s)
+             (string-match-p "[\x80-\xFF]" s)))
+      (decode-coding-string (encode-coding-string s 'utf-8) 'utf-8)
+    s))
+
+(defun emacs-vent--sanitize (x)
+  "Recursively run every string inside X (a message plist, or a nested
+list / vector value within one) through `emacs-vent--utf8'.
+Belt-and-suspenders for `emacs-vent--send': `emacs-vent--message-advice'
+already decodes its own args, so in practice this only catches a raw-byte
+string introduced by an `emacs-vent-out-filters' entry or a future caller."
+  (cond
+   ((stringp x) (emacs-vent--utf8 x))
+   ((and (consp x) (proper-list-p x)) (mapcar #'emacs-vent--sanitize x))
+   ((vectorp x) (apply #'vector (mapcar #'emacs-vent--sanitize x)))
+   (t x)))
+
 (defun emacs-vent--send (plist)
   "Run PLIST through `emacs-vent-out-filters', then send to the client.
-Drops silently if no client is connected (design doc C-8)."
+Drops silently if no client is connected (design doc C-8).
+
+String values pass through `emacs-vent--sanitize' first so a unibyte or
+raw-byte string (see `emacs-vent--utf8') cannot make
+`emacs-vent-serialize-function' signal.  A serialize failure that survives
+that is logged with the message's `:kind'/`:type' and a content preview --
+previously it vanished into `emacs-vent--protected' as a bare `error: ...'
+with no clue which message was lost."
   (when emacs-vent--client
     (emacs-vent--protected
      (let ((msg plist))
@@ -95,9 +144,16 @@ Drops silently if no client is connected (design doc C-8)."
          (dolist (filter emacs-vent-out-filters)
            (setq msg (funcall filter msg))
            (unless msg (throw 'emacs-vent-dropped nil)))
-         (websocket-send-text
-          emacs-vent--client
-          (funcall emacs-vent-serialize-function msg)))))))
+         (setq msg (emacs-vent--sanitize msg))
+         (let ((text (condition-case err
+                         (funcall emacs-vent-serialize-function msg)
+                       (error
+                        (emacs-vent--log
+                         "drop: serialize failed (kind=%S type=%S): %S -- content=%.160S"
+                         (plist-get msg :kind) (plist-get msg :type)
+                         err (plist-get msg :content))
+                        (throw 'emacs-vent-dropped nil)))))
+           (websocket-send-text emacs-vent--client text)))))))
 
 (defun emacs-vent--send-event (type &optional content source)
   ;; `json-serialize' treats a bare Lisp nil value as an empty object, not
@@ -184,10 +240,21 @@ Context is sent separately now (`emacs-vent--maybe-send-context'), not here."
    (emacs-vent--send-flush)))
 
 (defun emacs-vent--message-advice (orig-fn fmt &rest args)
+  ;; Decode any unibyte string arg (and FMT) to UTF-8 *before* formatting the
+  ;; event content. The dominant caller is Tezcatl's resolver, which does
+  ;; `(message "tez:%s ok %s" corr (json-serialize VALUE))' where
+  ;; `json-serialize' hands back raw UTF-8 bytes as a unibyte string; without
+  ;; this the formatted content carries those bytes and `emacs-vent--send'
+  ;; cannot serialize it (see `emacs-vent--utf8'). ORIG-FN is still called
+  ;; with the untouched args -- what Emacs echoes is out of scope here.
   (let ((result (apply orig-fn fmt args)))
     (when (and emacs-vent-mode fmt)
       (emacs-vent--protected
-       (emacs-vent--send-event "message" (apply #'format-message fmt args))))
+       (emacs-vent--send-event
+        "message"
+        (apply #'format-message
+               (emacs-vent--utf8 fmt)
+               (mapcar #'emacs-vent--utf8 args)))))
     result))
 
 (defun emacs-vent--after-change (_beg _end _len)
