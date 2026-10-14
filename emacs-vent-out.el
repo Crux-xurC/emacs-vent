@@ -282,13 +282,28 @@ Context is sent separately now (`emacs-vent--maybe-send-context'), not here."
 ;; --- Server lifecycle ---
 
 (defun emacs-vent--on-open (ws)
-  (if emacs-vent--client
-      ;; Phase 1 accepts a single connection only (design doc C-2).
-      (websocket-close ws)
+  (cond
+   ;; A browser always sends `Origin' with a WebSocket handshake, and page JS
+   ;; cannot drop or forge it; the clients meant for this port (Tezcatl's
+   ;; relay, websocat) send none. Without this, any web page open in the
+   ;; user's browser could take the single slot whenever the relay does not
+   ;; hold it (before it connects, while it restarts) and inject keys --
+   ;; `M-:' is arbitrary elisp. Binding to 127.0.0.1 does not stop that: the
+   ;; handshake is outside the same-origin policy. Checked before the slot
+   ;; test, so a refused page never holds the slot. Not authentication: who
+   ;; connects is not asked, only whether a browser does.
+   ((websocket-origin ws)
+    (emacs-vent--log "refused a connection with Origin %s (browsers go through the relay)"
+                     (websocket-origin ws))
+    (websocket-close ws))
+   (emacs-vent--client
+    ;; Phase 1 accepts a single connection only (design doc C-2).
+    (websocket-close ws))
+   (t
     (setq emacs-vent--client ws)
     (emacs-vent--send (list :kind "hello"))
     ;; Establish the initial injection target right away (ver0 §10).
-    (emacs-vent--send-context-now)))
+    (emacs-vent--send-context-now))))
 
 (defun emacs-vent--on-message (ws frame)
   (when emacs-vent-in-function
