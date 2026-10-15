@@ -61,7 +61,22 @@ to support Phase 5 (design doc vent-in v0.2, in-filters position at receipt)."
 (defvar emacs-vent--last-target nil
   "Last (BUFFER-NAME WINDOW-ID FRAME-ID) sent as a context message, or nil.")
 
-(defconst emacs-vent-log-buffer-name "*emacs-vent-log*")
+(defcustom emacs-vent-log-directory
+  (expand-file-name "emacs-vent"
+                    (let ((x (getenv "XDG_STATE_HOME")))
+                      (if (and x (file-name-absolute-p x)) x "~/.local/state")))
+  "Where emacs-vent writes its log, one file per start of Emacs.
+`log.txt' is this Emacs's; the one before it is kept as `log.1.txt' (the
+log of a run that went down is there to read), and older ones go."
+  :type 'directory
+  :group 'emacs-vent)
+
+(defvar emacs-vent--log-rotated nil
+  "Non-nil once this Emacs has moved the previous run's log aside.")
+
+(defun emacs-vent-log-file ()
+  "This Emacs's log file."
+  (expand-file-name "log.txt" emacs-vent-log-directory))
 
 (defmacro emacs-vent--protected (&rest body)
   "Run BODY, logging and swallowing any error instead of propagating it.
@@ -70,10 +85,27 @@ Required by design doc C-8: a hook error must never reach Emacs."
        (progn ,@body)
      (error (emacs-vent--log "error: %S" err) nil)))
 
+(defun emacs-vent--rotate-log ()
+  "Once per Emacs: the previous run's log becomes `log.1.txt' (the one
+before that goes), and this run starts a new `log.txt'."
+  (unless emacs-vent--log-rotated
+    (setq emacs-vent--log-rotated t)
+    (ignore-errors
+      (make-directory emacs-vent-log-directory t)
+      (let ((cur (emacs-vent-log-file))
+            (prev (expand-file-name "log.1.txt" emacs-vent-log-directory)))
+        (when (file-exists-p cur)
+          (rename-file cur prev t))))))
+
 (defun emacs-vent--log (fmt &rest args)
-  (with-current-buffer (get-buffer-create emacs-vent-log-buffer-name)
-    (goto-char (point-max))
-    (insert (apply #'format fmt args) "\n")))
+  "Append one line to this Emacs's log file (`emacs-vent-log-file').
+Written from a string, so no buffer changes (no `buffer.changed' event) and
+nothing is kept in memory; `silent' keeps `write-region' from messaging (a
+message is itself sent on). A log that cannot be written is let go."
+  (ignore-errors
+    (emacs-vent--rotate-log)
+    (write-region (concat (format-time-string "%F %T ") (apply #'format fmt args) "\n")
+                  nil (emacs-vent-log-file) t 'silent)))
 
 (defun emacs-vent-source-default (symbol)
   "Best-effort source name for SYMBOL via `symbol-file'. See design doc B-1."

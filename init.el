@@ -11,4 +11,4 @@
 
 (emacs-vent-mode 1)
 
-(message "emacs-vent ready on 127.0.0.1:%s" emacs-vent-port)
+(message "emacs-vent ready on 127.0.0.1:%s (log: %s)" emacs-vent-port (emacs-vent-log-file))
