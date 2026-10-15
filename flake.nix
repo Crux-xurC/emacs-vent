@@ -10,7 +10,7 @@
             system  =  "x86_64-linux";
             pkgs  =  import  nixpkgs  {  inherit  system;  };
 
-            #  emacs-vent-out が依存する唯一のパッケージ
+            # The only package required by emacs-vent-out
             emacsPackages  =  epkgs:  with  epkgs;  [  websocket  ];
 
             myEmacs  =  (pkgs.emacsPackagesFor  pkgs.emacs).emacsWithPackages  emacsPackages;
@@ -22,7 +22,7 @@
                 buildInputs  =  [  myEmacs  pkgs.websocat  ];
 
                 shellHook  =  ''
-                    #  日常使いのemacs-flake設定から隔離する
+                    # Keep this harness isolated from the everyday emacs-flake configuration
                     export  HOME_FOR_EMACS="$PWD"
 
                     e()  {

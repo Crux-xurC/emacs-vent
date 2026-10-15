@@ -1,6 +1,6 @@
 ;;; emacs-vent-in.el --- Tezcatl -> Emacs input injection  -*- lexical-binding: t; -*-
 
-;; Phase 5 (emacs-vent-in設計文書_v0.2.md). Converts normalized input
+;; Phase 5 (input design document, v0.2). Converts normalized input
 ;; received from Tezcatl into Emacs events and injects them via
 ;; `unread-command-events', without interpreting what they mean (§1/§2).
 ;; Plugs into emacs-vent-out's existing server via `emacs-vent-in-function'

@@ -15,7 +15,7 @@
 ;; `emacs-vent--protected', the same way the `compilation.*' hooks in that
 ;; file do), but so that loading it is opt-in: a third-party package such as
 ;; Proof General must not become a hard dependency of `emacs-vent-out.el'
-;; core (overview.md principle 10, "Tezcatl Core を肥大化させない"). Load
+;; core (Tezcatl architecture principle 10: keep the core small). Load
 ;; this file yourself (after `emacs-vent-out') only if Proof General is also
 ;; installed.
 ;;

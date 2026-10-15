@@ -12,7 +12,7 @@
 ;; key injection cannot express (e.g. picking one of several structured
 ;; choices rather than sending keystrokes) -- the same "insert an empty stage
 ;; on purpose" move as Tezcatl's Input Middleware seam
-;; (overview.md §7: "空でも1段挟む"). Until that day, requiring this file
+;; (the architecture keeps this extension point as an explicit stage). Until then, requiring this file
 ;; buys nothing beyond documenting where that code would go; it does not need
 ;; to be loaded for dialogue driving to work.
 

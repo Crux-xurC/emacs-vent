@@ -190,7 +190,7 @@ with no clue which message was lost."
 (defun emacs-vent--send-event (type &optional content source)
   ;; `json-serialize' treats a bare Lisp nil value as an empty object, not
   ;; JSON null, so an unresolved source must be spelled out as `:null'
-  ;; explicitly (design doc A-5: "解決に失敗した場合は null を送る").
+  ;; explicitly (design rule A-5: send null when source resolution fails).
   (emacs-vent--send
    (append (list :kind "event"
                  :source (or source (emacs-vent--current-source) :null)
