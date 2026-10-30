@@ -1,19 +1,52 @@
 ;;; emacs-vent-out.el --- Emacs -> Tezcatl event/context bridge  -*- lexical-binding: t; -*-
 
-;; Phase 1 (design doc Part C): single client, 127.0.0.1 only, immediate send.
-;; `emacs-vent-in-function' is the Phase 5 (vent-in) plug-in point.
+;; Copyright (C) 2026 Crux-xurC
+
+;; Author: Crux-xurC
+;; URL: https://github.com/Crux-xurC/emacs-vent
+;; Package-Requires: ((emacs "27.1") (websocket "1.12"))
+;; SPDX-License-Identifier: GPL-3.0-or-later
+
+;; This file is not part of GNU Emacs.
+
+;; This program is free software: you can redistribute it and/or modify
+;; it under the terms of the GNU General Public License as published by
+;; the Free Software Foundation, either version 3 of the License, or
+;; (at your option) any later version.
 ;;
-;; Context rework (2026-08-28): `context' is no longer a per-command state
-;; snapshot flushed together with events. It is now a lightweight, flush-exempt
-;; notification of *where vent-in input currently goes* (the selected window of
-;; the selected frame, or the active minibuffer), sent only when that target
-;; changes. See `emacs-vent--maybe-send-context'. This supersedes the
-;; "Event/Context flushed as one unit" wording in design doc A-7 / ver0
-;; §10-11,19.
+;; This program is distributed in the hope that it will be useful,
+;; but WITHOUT ANY WARRANTY; without even the implied warranty of
+;; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+;; GNU General Public License for more details.
+;;
+;; You should have received a copy of the GNU General Public License
+;; along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+;;; Commentary:
+
+;; `emacs-vent-mode' serves a WebSocket on 127.0.0.1 (`emacs-vent-port')
+;; for one client -- Tezcatl's relay, or any tool that speaks the same JSON.
+;; It sends:
+;;
+;;   hello    once, when the client connects
+;;   context  where key input goes now (the selected window of the selected
+;;            frame, or the active minibuffer): on connect, and whenever it
+;;            changes; never batched (see `emacs-vent--maybe-send-context')
+;;   event    something that happened: `message', `buffer.changed',
+;;            `compilation.started' / `.output' / `.finished'
+;;   flush    the end of a command: the events since the last flush belong
+;;            to that command
+;;
+;; Incoming messages go to `emacs-vent-in-function', which `emacs-vent-in'
+;; sets.  A connection carrying an Origin header (a browser) is refused, and
+;; so is a second client while one is connected.
+
+;;; Code:
 
 (require 'websocket)
 (require 'json)
 (require 'compile)
+(require 'subr-x)                       ; `string-trim' before Emacs 29
 
 (defgroup emacs-vent nil
   "Bridge between Emacs and an external UI (Tezcatl) over a local WebSocket."
@@ -44,15 +77,14 @@ keep passing it on, or nil to drop it. Default is pass-through."
 
 (defcustom emacs-vent-in-function nil
   "Function called with (WS FRAME) for each incoming websocket message, or nil.
-Left nil in Phase 1 (input ignored). `emacs-vent-in' sets this to its own
-handler when loaded, so Phase 1's server plumbing needs no further changes
-to support Phase 5 (design doc vent-in v0.2, in-filters position at receipt)."
+When nil, incoming messages are ignored.  Loading `emacs-vent-in' sets this
+to its own handler, so the server here needs no change to take input."
   :type '(choice (const nil) function)
   :group 'emacs-vent)
 
 (defvar emacs-vent--server nil)
 (defvar emacs-vent--client nil
-  "The single accepted client connection, or nil (Phase 1: one only).")
+  "The single accepted client connection, or nil (only one is accepted).")
 
 (defvar emacs-vent--id-table (make-hash-table :test 'eq :weakness 'key)
   "Maps live window/frame objects to a stable string id for this session.")
@@ -80,7 +112,7 @@ log of a run that went down is there to read), and older ones go."
 
 (defmacro emacs-vent--protected (&rest body)
   "Run BODY, logging and swallowing any error instead of propagating it.
-Required by design doc C-8: a hook error must never reach Emacs."
+A hook error must never reach Emacs's own command execution."
   `(condition-case err
        (progn ,@body)
      (error (emacs-vent--log "error: %S" err) nil)))
@@ -108,7 +140,8 @@ message is itself sent on). A log that cannot be written is let go."
                   nil (emacs-vent-log-file) t 'silent)))
 
 (defun emacs-vent-source-default (symbol)
-  "Best-effort source name for SYMBOL via `symbol-file'. See design doc B-1."
+  "Best-effort source name for SYMBOL via `symbol-file': the file it was
+defined in, without directory or extension (e.g. \"simple\")."
   (when symbol
     (let ((file (ignore-errors (symbol-file symbol))))
       (when file
@@ -161,14 +194,13 @@ string introduced by an `emacs-vent-out-filters' entry or a future caller."
 
 (defun emacs-vent--send (plist)
   "Run PLIST through `emacs-vent-out-filters', then send to the client.
-Drops silently if no client is connected (design doc C-8).
+Drops silently if no client is connected.
 
 String values pass through `emacs-vent--sanitize' first so a unibyte or
 raw-byte string (see `emacs-vent--utf8') cannot make
 `emacs-vent-serialize-function' signal.  A serialize failure that survives
-that is logged with the message's `:kind'/`:type' and a content preview --
-previously it vanished into `emacs-vent--protected' as a bare `error: ...'
-with no clue which message was lost."
+that is logged with the message's `:kind'/`:type' and a content preview,
+so the log tells which message was lost."
   (when emacs-vent--client
     (emacs-vent--protected
      (let ((msg plist))
@@ -190,7 +222,7 @@ with no clue which message was lost."
 (defun emacs-vent--send-event (type &optional content source)
   ;; `json-serialize' treats a bare Lisp nil value as an empty object, not
   ;; JSON null, so an unresolved source must be spelled out as `:null'
-  ;; explicitly (design rule A-5: send null when source resolution fails).
+  ;; explicitly (an unresolved source is sent as null).
   (emacs-vent--send
    (append (list :kind "event"
                  :source (or source (emacs-vent--current-source) :null)
@@ -223,7 +255,7 @@ the selected window of the selected frame, or the active minibuffer."
 
 (defun emacs-vent--send-context-now ()
   "Unconditionally send the current target as a context message.
-Used on client connect to establish the initial target (ver0 §10)."
+Used on client connect to establish the initial target."
   (emacs-vent--protected
    (let ((target (emacs-vent--current-target)))
      (setq emacs-vent--last-target target)
@@ -253,7 +285,7 @@ applied by the client on arrival -- it is not part of the flush contract."
   "Unconditionally (re-)send the current vent-in target as a context message.
 Unlike `emacs-vent--maybe-send-context', this sends even when the target is
 unchanged. A client that attached after the initial `hello'/`context'
-handshake -- e.g. a browser tab reaching emacs-vent through the Phase 7
+handshake -- e.g. a browser tab reaching emacs-vent through Tezcatl's
 relay, which multiplexes many tabs onto this one client slot -- calls this
 \(delivered as an `M-:' input) to obtain the current target. No-op when no
 client is connected."
@@ -263,11 +295,12 @@ client is connected."
 (defun emacs-vent--send-flush ()
   (emacs-vent--send (list :kind "flush")))
 
-;; --- Event sources (design doc C-4) ---
+;; --- Event sources ---
 
 (defun emacs-vent--post-command ()
-  "Command-boundary flush for batched events (design doc A-7 / C-7 step 6).
-Context is sent separately now (`emacs-vent--maybe-send-context'), not here."
+  "Send `flush' at the end of every command: the events sent since the
+last flush belong to that command.  Context is not part of this; it is
+sent on its own by `emacs-vent--maybe-send-context'."
   (emacs-vent--protected
    (emacs-vent--send-flush)))
 
@@ -290,7 +323,7 @@ Context is sent separately now (`emacs-vent--maybe-send-context'), not here."
     result))
 
 (defun emacs-vent--after-change (_beg _end _len)
-  ;; buffer.changed is notification-only: no content (design doc A-5/B-4).
+  ;; buffer.changed is notification-only: no content, not even which buffer.
   (emacs-vent--protected (emacs-vent--send-event "buffer.changed")))
 
 (defun emacs-vent--compilation-start (_proc)
@@ -329,12 +362,12 @@ Context is sent separately now (`emacs-vent--maybe-send-context'), not here."
                      (websocket-origin ws))
     (websocket-close ws))
    (emacs-vent--client
-    ;; Phase 1 accepts a single connection only (design doc C-2).
+    ;; One client at a time: a second is closed at once.
     (websocket-close ws))
    (t
     (setq emacs-vent--client ws)
     (emacs-vent--send (list :kind "hello"))
-    ;; Establish the initial injection target right away (ver0 §10).
+    ;; Establish the initial injection target right away.
     (emacs-vent--send-context-now))))
 
 (defun emacs-vent--on-message (ws frame)
@@ -348,7 +381,8 @@ Context is sent separately now (`emacs-vent--maybe-send-context'), not here."
 ;;;###autoload
 (define-minor-mode emacs-vent-mode
   "Serve Emacs events/context to Tezcatl over a local WebSocket.
-Implements Part C (Phase 1 minimal form) of the emacs-vent-out design doc."
+Listens on 127.0.0.1:`emacs-vent-port' for one client.  With
+`emacs-vent-in' loaded, key input from that client is injected too."
   :global t
   :group 'emacs-vent
   (if emacs-vent-mode

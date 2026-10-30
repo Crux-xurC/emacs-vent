@@ -22,7 +22,7 @@
                 buildInputs  =  [  myEmacs  pkgs.websocat  ];
 
                 shellHook  =  ''
-                    # Keep this harness isolated from the everyday emacs-flake configuration
+                    # Keep this harness isolated from your own Emacs configuration
                     export  HOME_FOR_EMACS="$PWD"
 
                     e()  {
@@ -30,7 +30,7 @@
                     }
 
                     echo  "--------------------------------------------------"
-                    echo  "🚀  emacs-vent dev shell (plain, isolated from emacs-flake)"
+                    echo  "🚀  emacs-vent dev shell (plain, isolated from your own Emacs configuration)"
                     echo  "Emacs Path: $(which emacs)"
                     echo  "--------------------------------------------------"
                     echo  "Type 'e' to launch."

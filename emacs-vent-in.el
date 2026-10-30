@@ -1,11 +1,40 @@
 ;;; emacs-vent-in.el --- Tezcatl -> Emacs input injection  -*- lexical-binding: t; -*-
 
-;; Phase 5 (input design document, v0.2). Converts normalized input
-;; received from Tezcatl into Emacs events and injects them via
-;; `unread-command-events', without interpreting what they mean (§1/§2).
-;; Plugs into emacs-vent-out's existing server via `emacs-vent-in-function'
-;; (§ "responsibility split": emacs-vent-out owns the connection/lifecycle,
-;; vent-in only ever handles incoming messages).
+;; Copyright (C) 2026 Crux-xurC
+
+;; Author: Crux-xurC
+;; URL: https://github.com/Crux-xurC/emacs-vent
+;; SPDX-License-Identifier: GPL-3.0-or-later
+
+;; This file is not part of GNU Emacs.
+
+;; This program is free software: you can redistribute it and/or modify
+;; it under the terms of the GNU General Public License as published by
+;; the Free Software Foundation, either version 3 of the License, or
+;; (at your option) any later version.
+;;
+;; This program is distributed in the hope that it will be useful,
+;; but WITHOUT ANY WARRANTY; without even the implied warranty of
+;; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+;; GNU General Public License for more details.
+;;
+;; You should have received a copy of the GNU General Public License
+;; along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+;;; Commentary:
+
+;; Converts normalized key input received from the client into Emacs
+;; events and injects them via `unread-command-events', without
+;; interpreting what they mean: Emacs's own keymaps decide that.
+;;
+;;   {"kind": "input",
+;;    "sequence": [{"key": "x", "modifiers": ["control"]}, ...]}
+;;
+;; Plugs into emacs-vent-out's server via `emacs-vent-in-function':
+;; emacs-vent-out owns the connection and its lifecycle, this file only
+;; handles incoming messages.
+
+;;; Code:
 
 (require 'emacs-vent-out)
 (require 'json)
@@ -15,8 +44,8 @@
   "Functions run on an incoming message plist before it is acted on.
 Each is called with the full parsed message (including its :kind) and
 must return a message plist to keep passing it on, or nil to drop it.
-Runs immediately after JSON parsing, before any event conversion
-(design doc §8.1). Default is pass-through (§8.3)."
+Runs immediately after JSON parsing, before any event conversion.
+Default is pass-through."
   :type 'hook
   :group 'emacs-vent)
 
@@ -24,25 +53,26 @@ Runs immediately after JSON parsing, before any event conversion
   '("return" "tab" "backspace" "delete" "escape"
     "up" "down" "left" "right" "home" "end" "prior" "next"
     "f1" "f2" "f3" "f4" "f5" "f6" "f7" "f8" "f9" "f10" "f11" "f12")
-  "Non-printable key names accepted from the wire protocol (design doc §6.2).")
+  "Non-printable key names accepted from the wire protocol.
+Any other key must be a single character.")
 
 (defconst emacs-vent-in--modifier-prefix
   '(("control" . "C-") ("meta" . "M-") ("shift" . "S-") ("super" . "s-"))
-  "Wire protocol modifier name -> `kbd' prefix letter (design doc §4).")
+  "Wire protocol modifier name -> `kbd' prefix letter.")
 
 (defun emacs-vent-in--kbd-spec (key modifiers)
   "Build a single `kbd'-syntax spec string for one InputEvent.
 KEY is a string (a literal printable character, or one of
 `emacs-vent-in--special-keys'). MODIFIERS is a list/vector of strings
 drawn from control/meta/shift/super. Signals an error on anything
-unrecognized -- caught by the caller per design doc §13."
+unrecognized -- caught by the caller, which drops the whole sequence."
   (unless (and (stringp key) (> (length key) 0))
     (error "unrecognized key: %S" key))
   (let ((key-part
          (cond
           ((member key emacs-vent-in--special-keys) (format "<%s>" key))
-          ;; A literal space is sent as the one-character key " " (design doc
-          ;; §5.4: `space' is not a special-key name). `kbd' splits its spec on
+          ;; A literal space is sent as the one-character key " " (`space'
+          ;; is not a special-key name). `kbd' splits its spec on
           ;; whitespace, so " " parses to the empty key sequence and
           ;; `(aref (kbd " ") 0)' throws -- spell it "SPC" for `kbd'.
           ((equal key " ") "SPC")
@@ -66,7 +96,7 @@ unrecognized -- caught by the caller per design doc §13."
 
 (defun emacs-vent-in--event (input-event)
   "Convert one wire-protocol InputEvent plist (:key :modifiers) to a
-single Emacs event (an integer or a symbol), per design doc §5/§9.1:
+single Emacs event (an integer or a symbol).
 `kbd' is what actually applies the modifier bit/symbol-prefix, so a
 modifier+key pair can never come apart into separate events."
   (let* ((key (plist-get input-event :key))
@@ -75,15 +105,12 @@ modifier+key pair can never come apart into separate events."
     (aref (kbd spec) 0)))
 
 (defun emacs-vent-in--handle-input (sequence)
-  "SEQUENCE is a list of InputEvent plists (design doc §7). Convert all
-of them and inject as one run of events, in order. If any one event in
-the sequence fails to convert, the whole sequence is dropped rather
-than injecting a partial key sequence (e.g. C-x without C-f) -- design
-doc §13 says discard on conversion/injection failure without specifying
-per-event granularity; whole-message atomicity is the safer reading.
-SEQUENCE that is not a list (a malformed message: a bare value or object
-where an array was expected) is dropped with a log, per §13's rule that
-malformed input is discarded and recorded, never silently ignored."
+  "SEQUENCE is a list of InputEvent plists. Convert all of them and
+inject as one run of events, in order. If any one event in the sequence
+fails to convert, the whole sequence is dropped rather than injecting a
+partial key sequence (e.g. C-x without C-f). A SEQUENCE that is not a
+list (a bare value or object where an array was expected) is dropped too.
+Every drop is logged, never silently ignored."
   (if (not (listp sequence))
       (emacs-vent--log "in: input sequence not an array: %S, dropped" sequence)
     (condition-case err
@@ -94,7 +121,7 @@ malformed input is discarded and recorded, never silently ignored."
 
 (defun emacs-vent-in--apply-filters (msg)
   "Run MSG through `emacs-vent-in-filters'; nil (from a filter, or from
-an error inside one) means drop (design doc §13 in-filters row)."
+an error inside one) means drop."
   (condition-case err
       (catch 'emacs-vent-in-dropped
         (dolist (filter emacs-vent-in-filters)
@@ -105,14 +132,10 @@ an error inside one) means drop (design doc §13 in-filters row)."
 
 (defun emacs-vent-in--on-message (_ws frame)
   "Entry point wired into `emacs-vent-in-function' (emacs-vent-out.el).
-The only accepted kind is `input' (overview.md §3.6: vent-in has a
-single input path; the `clipboard' and `eval' kinds were withdrawn
-2026-08-30). The design doc pins key/modifiers only at the field level
-(§7's sequence structure) without exact JSON key names; this
-implementation assumes, mirroring emacs-vent-out's own `:kind'
-convention:
+The only accepted kind is `input' -- there is a single input path; text
+and pastes arrive as keys too:
   {\"kind\": \"input\", \"sequence\": [{\"key\": ..., \"modifiers\": [...]}, ...]}
-Flag to the user if the Tezcatl side expects something different."
+Invalid JSON, another kind, or a missing `sequence' is dropped and logged."
   (emacs-vent--protected
    (let ((msg (condition-case nil
                   (json-parse-string (websocket-frame-text frame)

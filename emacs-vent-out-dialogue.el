@@ -1,22 +1,43 @@
 ;;; emacs-vent-out-dialogue.el --- emacs-vent-out's dialogue half  -*- lexical-binding: t; -*-
 
+;; Copyright (C) 2026 Crux-xurC
+
+;; Author: Crux-xurC
+;; URL: https://github.com/Crux-xurC/emacs-vent
+;; SPDX-License-Identifier: GPL-3.0-or-later
+
+;; This file is not part of GNU Emacs.
+
+;; This program is free software: you can redistribute it and/or modify
+;; it under the terms of the GNU General Public License as published by
+;; the Free Software Foundation, either version 3 of the License, or
+;; (at your option) any later version.
+;;
+;; This program is distributed in the hope that it will be useful,
+;; but WITHOUT ANY WARRANTY; without even the implied warranty of
+;; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+;; GNU General Public License for more details.
+;;
+;; You should have received a copy of the GNU General Public License
+;; along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+;;; Commentary:
+
 ;; The "dialogue" half of emacs-vent-out: bridging tools that produce
-;; *continuous* output (as opposed to a one-shot `M-:' value return like the
-;; `magit.*' intents) -- Proof General is the first one. Its counterpart on
-;; the input side is `emacs-vent-in-dialogue.el' (driving), and together with
-;; `emacs-vent-in.el' / `emacs-vent-out.el' (command in/out) that makes four
-;; files total in this package. See the Tezcatl side's
-;; my_app/tezcatl/forAI/overview.md for the browser panels
-;; (`dialogue-input.html' / `dialogue-output.html').
+;; *continuous* output (as opposed to a one-shot `M-:' value returned
+;; through a `message') -- Proof General is the first one. Its counterpart
+;; on the input side is `emacs-vent-in-dialogue.el', and together with
+;; `emacs-vent-in.el' / `emacs-vent-out.el' that makes four files in this
+;; package. On the Tezcatl side, the `dialogue-output.html' panel shows
+;; these events.
 ;;
 ;; Kept in a separate file from `emacs-vent-out.el', not because it is a
 ;; different package (it isn't -- it freely reuses `emacs-vent-out.el's
 ;; private `emacs-vent--send-event' / `emacs-vent--send-flush' /
 ;; `emacs-vent--protected', the same way the `compilation.*' hooks in that
 ;; file do), but so that loading it is opt-in: a third-party package such as
-;; Proof General must not become a hard dependency of `emacs-vent-out.el'
-;; core (Tezcatl architecture principle 10: keep the core small). Load
-;; this file yourself (after `emacs-vent-out') only if Proof General is also
+;; Proof General must not become a hard dependency of the core. Load this
+;; file yourself (after `emacs-vent-out') only if Proof General is also
 ;; installed.
 ;;
 ;; Wire shape is deliberately identical to `compilation.*': exactly one new
@@ -32,6 +53,8 @@
 ;; assumption on the actual buffer-display config in use; if some
 ;; configuration does select an auxiliary buffer, fix it with
 ;; `display-buffer-alist' there, not here.)
+
+;;; Code:
 
 (require 'emacs-vent-out)
 (require 'proof-shell)
