@@ -97,14 +97,24 @@ This integration is an optional extension. Its future maintenance will depend on
 
 ## Development
 
-The Nix development shell provides Emacs with the `websocket` package and `websocat`. It uses this repository as an isolated Emacs init directory, apart from your own configuration.
+This repository's `init.el` is a plain test harness: it loads `emacs-vent-out` and `emacs-vent-in`, enables the mode and listens on port 4000, without your own configuration.
+
+With any Emacs, install `websocket` once (for example `M-x package-install RET websocket` with MELPA in `package-archives`), then start the harness from this directory:
+
+```sh
+emacs -Q -f package-initialize -l init.el
+```
+
+`-Q` skips your init file; `-f package-initialize` makes your installed packages (`websocket`) available. To use another port, add `--eval '(setq emacs-vent-port 4010)'` before `-l init.el`.
+
+Optionally, with Nix, `flake.nix` provides a development shell with Emacs, the `websocket` package and `websocat`. It uses this repository as an isolated Emacs init directory:
 
 ```sh
 nix develop
 e
 ```
 
-The `e` command starts Emacs with this repository's `init.el`, which loads `emacs-vent-out` and `emacs-vent-in`, enables the mode and listens on port 4000. To connect manually:
+To connect manually with any WebSocket client, for example [websocat](https://github.com/vi/websocat):
 
 ```sh
 websocat ws://127.0.0.1:4000/
